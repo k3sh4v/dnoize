@@ -1,5 +1,8 @@
 torch-directml
 torchaudio
 soundfile
+ipykernel
+nbformat
+fastai
 numpy
 tqdm
