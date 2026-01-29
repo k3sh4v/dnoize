@@ -1,8 +1,13 @@
+fastprogress==1.0.5
 torch-directml
 torchaudio
+ipywidgets
 soundfile
 ipykernel
 nbformat
+librosa
 fastai
+pystoi
 numpy
+pesq
 tqdm
