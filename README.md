@@ -135,3 +135,7 @@ Valentini-Botinhao, C. (2017). Noisy speech database for training speech enhance
 algorithms and TTS models [Data set]. University of Edinburgh. School of Informatics. 
 Centre for Speech Technology Research (CSTR). https://doi.org/10.7488/ds/2117
 ```
+
+## Additional Requirements
+
+Before installing the python packages using requirements.txt, you need to download and install Windows 11 SDK (latest version) using the [Visual Studio Installer Tool](https://visualstudio.microsoft.com/vs/community/). This is required for building pesq package. If you are not going to use pesq, you can skip it but do not forget to remove it from the train code.
