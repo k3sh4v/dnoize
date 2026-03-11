@@ -1,4 +1,5 @@
 fastprogress==1.0.5
+pyroomacoustics
 torch-directml
 torchaudio
 ipywidgets
