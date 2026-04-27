@@ -19,36 +19,36 @@ tensor.device.type == 'privateuseone'   # True if on DML
 
 ---
 
-## 2. CONFIRMED BROKEN — Never use in training (backward pass)
+## 2. CONFIRMED BROKEN - Never use in training (backward pass)
 
 ### Autograd / Backward Pass
-- `torch.utils.checkpoint` — gradient checkpointing broken entirely, no workaround
-- `F.pad` backward (FP16 or FP32) — silent wrong gradients
-- FP16 sigmoid gate backward — NaN gradients
-- `torch.amp.autocast("privateuseone")` — broken entirely
-- GELU backward — replace with ReLU everywhere
-- `aten::_foreach_lerp_` — triggered by standard AdamW, silent CPU fallback
-- `repeat_interleave` backward — broken
-- `ConvTranspose1d(groups=channels)` — broken backward
-- `Conv1d` grad reduction at very large sequence lengths — wrong gradients
-- `torch.lerp` / `aten::lerp.Scalar_out` — broken
-- `torch.stft` backward — all STFT must run on CPU during training
+- `torch.utils.checkpoint` - gradient checkpointing broken entirely, no workaround
+- `F.pad` backward (FP16 or FP32) - silent wrong gradients
+- FP16 sigmoid gate backward - NaN gradients
+- `torch.amp.autocast("privateuseone")` - broken entirely
+- GELU backward - replace with ReLU everywhere
+- `aten::_foreach_lerp_` - triggered by standard AdamW, silent CPU fallback
+- `repeat_interleave` backward - broken
+- `ConvTranspose1d(groups=channels)` - broken backward
+- `Conv1d` grad reduction at very large sequence lengths - wrong gradients
+- `torch.lerp` / `aten::lerp.Scalar_out` - broken
+- `torch.stft` backward - all STFT must run on CPU during training
 
 ### Optimizers
-- `torch.optim.AdamW` — triggers `aten::_foreach_lerp_` → use `Adam(decouple_wd=True)`
-- `LAMB` — catastrophic: `.item()` per param per step → full pipeline flush per step
-- Any optimizer using `foreach` ops — verify before using
+- `torch.optim.AdamW` - triggers `aten::_foreach_lerp_` -> use `Adam(decouple_wd=True)`
+- `LAMB` - catastrophic: `.item()` per param per step -> full pipeline flush per step
+- Any optimizer using `foreach` ops - verify before using
 
 ### Mixed Precision
-- FP16 training — NOT viable (multiple broken backward ops, silent wrong gradients)
-- FP16 inference — OK (forward pass only)
+- FP16 training - NOT viable (multiple broken backward ops, silent wrong gradients)
+- FP16 inference - OK (forward pass only)
 - Always train in FP32
 
 ### Other
-- `buf.detach() + copy_()` for buffer updates — breaks gradient flow silently
-  → Use `torch.cat` instead for causal/streaming buffer patterns
+- `buf.detach() + copy_()` for buffer updates - breaks gradient flow silently
+  -> Use `torch.cat` instead for causal/streaming buffer patterns
 - No sync/flush/stream API in torch_directml
-  → Confirmed via full recursive inspection of torch_directml module namespace
+  -> Confirmed via full recursive inspection of torch_directml module namespace
 
 ---
 
@@ -69,20 +69,20 @@ tensor.device.type == 'privateuseone'   # True if on DML
 
 ### Optimizers
 - `Adam(decouple_wd=True, eps=1e-7)` ✓
-  — eps=1e-7 (vs default 1e-8) recommended for DML numerical stability
+  - eps=1e-7 (vs default 1e-8) recommended for DML numerical stability
 - `Lookahead(Adam(...), k=10, alpha=0.5)` ✓
-  — all Lookahead ops (mul_, add_, copy_) are DML-native
+  - all Lookahead ops (mul_, add_, copy_) are DML-native
 - SGD with momentum ✓ (confirmed in Microsoft's own DML examples)
 
 ### Attention (inference only)
 ```python
-# Fused inference kernel — no backward registered
+# Fused inference kernel - no backward registered
 y, past_k, past_v = torch_directml.multi_head_attention(
     q, k, v, n_state, n_head,
     past_key_tensor, past_value_tensor,
     mask   # integer dtype, NOT additive float mask
 )
-# For autoregressive KV-cache decoding only — do not use in training
+# For autoregressive KV-cache decoding only - do not use in training
 ```
 
 ---
@@ -92,16 +92,16 @@ y, past_k, past_v = torch_directml.multi_head_attention(
 ### Sync Points (DML↔CPU)
 - Every `.item()` on a DML tensor = full pipeline flush (~88ms on RX 560X)
 - Minimize `.item()` inside training loops
-- Use Python float accumulation for metrics/loss smoothing — no per-batch `.item()`
+- Use Python float accumulation for metrics/loss smoothing - no per-batch `.item()`
 
 ### DML Command Queue
 - Queue depth grows ~+1.45ms/batch per epoch without forced sync
 - Force one `.item()` sync per epoch end to reset (implement as callback)
 
 ### Memory / Bandwidth
-- RX 560X: 4GB VRAM, 128-bit bus, 112 GB/s — bandwidth limited, not compute limited
-- Large T + Conv1d grad reduction → OOM or wrong gradients
-  → Workaround: pin final Conv1d to CPU
+- RX 560X: 4GB VRAM, 128-bit bus, 112 GB/s - bandwidth limited, not compute limited
+- Large T + Conv1d grad reduction -> OOM or wrong gradients
+  -> Workaround: pin final Conv1d to CPU
 
 ### .item() Cost Budget
 - 1 sync/epoch (queue flush): acceptable
@@ -114,7 +114,7 @@ y, past_k, past_v = torch_directml.multi_head_attention(
 
 ### Safe Patterns
 ```python
-# Causal buffer — torch.cat not in-place copy_
+# Causal buffer - torch.cat not in-place copy_
 class CausalConv1d(nn.Conv1d):
     def forward(self, x):
         padded = torch.cat([self._pad_cache, x], dim=-1)
@@ -130,7 +130,7 @@ class CpuPinnedConv(nn.Module):
             self.conv = self.conv.cpu()
         return self.conv(x.cpu()).to(x.device)
 
-# STFT — always CPU during training
+# STFT - always CPU during training
 def cpu_stft(x, n_fft, hop, window_cpu):
     sx = torch.stft(x.cpu(), n_fft=n_fft, hop_length=hop,
                     window=window_cpu, return_complex=True,
@@ -139,7 +139,7 @@ def cpu_stft(x, n_fft, hop, window_cpu):
 ```
 
 ### What to Avoid
-- ConvTranspose1d with groups — broken backward
+- ConvTranspose1d with groups - broken backward
 - Gradient through F.pad
 - Gradient checkpointing
 - GELU in any trainable layer
@@ -152,7 +152,7 @@ Apply patches after all model/loss/metric definitions (last notebook).
 
 ### Required Patches
 
-**AvgSmoothLoss** — eliminate `aten::_foreach_lerp_`
+**AvgSmoothLoss** - eliminate `aten::_foreach_lerp_`
 ```python
 # Replace fastai's tensor EMA with pure Python float
 # self._smooth = beta * self._smooth + (1-beta) * loss.item()
@@ -161,7 +161,7 @@ Apply patches after all model/loss/metric definitions (last notebook).
 **SafeSaveModelCallback**
 ```python
 # Guards IndexError on empty recorder
-# Persists best metric to JSON sidecar → restored in before_fit on resume
+# Persists best metric to JSON sidecar -> restored in before_fit on resume
 ```
 
 **RecorderCleaner(order=80)**
@@ -199,30 +199,30 @@ learn.fit_one_cycle(
     start_epoch=epochs_done
 )
 # SkipToEpoch(order=70) raises CancelEpochException for skipped epochs
-# ParamScheduler(order=60) reads pct_train=epoch/n_epoch → correct LR position
+# ParamScheduler(order=60) reads pct_train=epoch/n_epoch -> correct LR position
 # Skipped epochs take negligible time (no forward/backward)
 ```
 
 ---
 
-## 7. MICROSOFT DIRECTML EXAMPLES — KEY OBSERVATIONS
+## 7. MICROSOFT DIRECTML EXAMPLES - KEY OBSERVATIONS
 
 ### Whisper Inference Example
 - FP16 inference works (forward only)
 - GELU safe in inference, broken in training backward
 - torch.stft forward works on DML, backward does not
-- `torch_directml.multi_head_attention` — inference-only fused kernel
+- `torch_directml.multi_head_attention` - inference-only fused kernel
 - Uses integer mask not additive float causal mask
 
 ### Classification Training Example
 - Microsoft uses SGD (safest optimizer for DML)
-- `batch_loss.to('cpu')` before `.item()` — explicit CPU move before sync
+- `batch_loss.to('cpu')` before `.item()` - explicit CPU move before sync
 - No mixed precision in their own training examples
 - `loss.to(device)` on parameterless loss modules is a no-op, harmless
 
 ### General Rule
 - Forward pass: most ops work on DML
-- Backward pass: many ops broken — treat all backward ops as suspect until verified
+- Backward pass: many ops broken - treat all backward ops as suspect until verified
 
 ---
 
