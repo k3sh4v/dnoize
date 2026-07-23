@@ -30,7 +30,6 @@ tensor.device.type == 'privateuseone'   # True if on DML
 - `aten::_foreach_lerp_` - triggered by standard AdamW, silent CPU fallback
 - `repeat_interleave` backward - broken
 - `ConvTranspose1d(groups=channels)` - broken backward
-- `Conv1d` grad reduction at very large sequence lengths - wrong gradients
 - `torch.lerp` / `aten::lerp.Scalar_out` - broken
 - `torch.stft` backward - all STFT must run on CPU during training
 
@@ -49,14 +48,18 @@ tensor.device.type == 'privateuseone'   # True if on DML
   -> Use `torch.cat` instead for causal/streaming buffer patterns
 - No sync/flush/stream API in torch_directml
   -> Confirmed via full recursive inspection of torch_directml module namespace
+- torch.sqrt() on DirectML can produce NaN gradients when its input is exactly zero.
+  -> Always add a small epsilon (≥1e‑6) inside the square root, e.g., torch.sqrt(x + eps) instead of torch.sqrt(x).clamp(min=eps), to keep the backward gradient finite.
 
 ---
 
 ## 3. CONFIRMED WORKING
 
 ### Core Ops (FP32)
-- Conv1d forward + backward ✓
+- Conv1d forward + backward ✓ (tested standard, depthwise, pointwise at seq_len 512-48000)
 - InstanceNorm1d ✓
+- RMSNorm1d forward + backward ✓ (d_x, d_gamma, d_beta all correct at seq_len 512-48000)
+- Full residual block backward ✓ (dw_conv → pw_conv → activation → RMSNorm + skip at seq_len 48000)
 - ReLU forward + backward ✓
 - Sigmoid forward (inference only) ✓
 - GLU via split + ReLU + mul ✓
@@ -87,7 +90,61 @@ y, past_k, past_v = torch_directml.multi_head_attention(
 
 ---
 
-## 4. PERFORMANCE CHARACTERISTICS
+## 4. CRITICAL: CROSS-DEVICE PARAMETER PLACEMENT
+
+### The Pitfall
+If any `nn.Parameter` is on a different device than the tensor it operates on,
+the autograd graph silently breaks for all upstream layers. Norm-layer parameter
+gradients (d_gamma, d_beta) still compute correctly (they're local), but gradient
+flow through the cross-device boundary dies — all Conv1d layers upstream get exactly
+zero gradients while downstream norm layers retain non-zero local gradients.
+
+### Diagnostic Pattern
+```python
+Symptom:  ALL Conv1d grad_norm = 0.0 (exactly zero)
+          ALL RMSNorm/InstanceNorm grad_norm = small but non-zero
+          CPU-based modules have normal gradients
+Cause:    Norm parameters on CPU, input tensors on DML
+```
+
+### Root Cause Pattern
+
+```python
+# BROKEN: weight on CPU, x on DML -> autograd silently disconnects upstream
+class RMSNorm1d(nn.Module):
+    def __init__(self, channels):
+        self.weight = nn.Parameter(torch.ones(1, channels, 1))  # CPU by default!
+    def forward(self, x):        # x is on DML
+        return x * self.weight + self.bias  # cross-device = broken autograd
+
+# FIXED: weight created on the correct device from the start
+class RMSNorm1d(nn.Module):
+    def __init__(self, channels, device=None):
+        self.weight = nn.Parameter(torch.ones(1, channels, 1, device=device))
+    def forward(self, x):
+        return x * self.weight + self.bias  # same device = correct autograd
+```
+
+### Never Do This
+
+```python
+# NEVER bridge device gap inside forward() — creates disconnected copy
+def forward(self, x):  # x on DML
+    return x * self.weight.to(x.device)  # weight copied to DML but autograd broken
+```
+
+### Always Verify
+
+```python
+# After model.to(dml_device), check ALL params are on the same device
+devices = set(str(p.device) for n, p in model.named_parameters()
+             if 'out_proj' not in n)  # exclude intentional CPU modules
+assert len(devices) == 1, f"MIXED DEVICES: {devices}"
+```
+
+---
+
+## 5. PERFORMANCE CHARACTERISTICS
 
 ### Sync Points (DML↔CPU)
 - Every `.item()` on a DML tensor = full pipeline flush (~88ms on RX 560X)
@@ -110,7 +167,7 @@ y, past_k, past_v = torch_directml.multi_head_attention(
 
 ---
 
-## 5. ARCHITECTURAL CONSTRAINTS FOR DIRECTML
+## 6. ARCHITECTURAL CONSTRAINTS FOR DIRECTML
 
 ### Safe Patterns
 ```python
@@ -136,6 +193,20 @@ def cpu_stft(x, n_fft, hop, window_cpu):
                     window=window_cpu, return_complex=True,
                     center=False, onesided=True)
     return sx  # keep on CPU or .to(device) as needed
+
+# Device-aware norm — pass device through, no .to(x.device) in forward
+class RMSNorm1d(nn.Module):
+    def __init__(self, channels, eps=1e-4, affine=True, device=None):
+        super().__init__()
+        self.eps, self.affine = eps, affine
+        if affine:
+            self.weight = nn.Parameter(torch.ones(1, channels, 1, device=device))
+            self.bias   = nn.Parameter(torch.zeros(1, channels, 1, device=device))
+    def forward(self, x):
+        rms = (x ** 2).mean(dim=-1, keepdim=True).add(self.eps).sqrt().clamp(min=1e-4)
+        out = x / rms
+        if self.affine: out = out * self.weight + self.bias
+        return out
 ```
 
 ### What to Avoid
@@ -143,10 +214,12 @@ def cpu_stft(x, n_fft, hop, window_cpu):
 - Gradient through F.pad
 - Gradient checkpointing
 - GELU in any trainable layer
+- Mixed CPU/DML nn.Parameters in same forward computation graph
+- .to(x.device) inside forward() to bridge device gaps
 
 ---
 
-## 6. FASTAI-SPECIFIC PATCHES FOR DIRECTML
+## 7. FASTAI-SPECIFIC PATCHES FOR DIRECTML
 
 Apply patches after all model/loss/metric definitions (last notebook).
 
@@ -183,6 +256,20 @@ state = torch.load(path, map_location='cpu', weights_only=False)
 model.load_state_dict(state['model'])
 model.to(dml_device)
 # Handles Lookahead slow_weights correctly
+```
+
+**Gradient Profiling with GradientAccumulation**
+```python
+# CRITICAL: Gradient profiles must capture in after_backward (before optimizer.zero_grad)
+# After zero_grad, DML parameter gradients are cleared entirely.
+# With n_acc>1, capture on first and last batch only for performance.
+# Callback order: GradientClip(5) → Profile/Health(6) → GradientAccumulation(7)
+#
+# WRONG:  capture in after_epoch  → gradients already zeroed (shows all zeros)
+# RIGHT:  capture in after_backward → gradients still present (shows real values)
+#
+# Immediate first-batch warning: print zero/NaN detection at batch=0
+# so issues are caught before the rest of the epoch runs.
 ```
 
 ### Training Resume Pattern
@@ -226,7 +313,7 @@ learn.fit_one_cycle(
 
 ---
 
-## 8. ENVIRONMENT
+## 9. ENVIRONMENT
 
 ```
 GPU:       AMD Radeon RX 560X 4GB VRAM

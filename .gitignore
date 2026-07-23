@@ -214,3 +214,4 @@ data/
 old_training_stats/
 old_training_files/
 models_old/
+gradient_explode_issue/
