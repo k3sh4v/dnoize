@@ -35,26 +35,26 @@ After downloading, organize the files in the following structure:
 
 ```
 project_root/
-├── data/
-│   ├── train/
-│   │   ├── clean_trainset_28spk_wav/
-│   │   │   ├── p226_001.wav
-│   │   │   ├── p226_002.wav
-│   │   │   └── ...
-│   │   └── noisy_trainset_28spk_wav/
-│   │       ├── p226_001.wav
-│   │       ├── p226_002.wav
-│   │       └── ...
-│   └── test/
-│       ├── clean_testset_wav/
-│       │   ├── p232_001.wav
-│       │   ├── p232_002.wav
-│       │   └── ...
-│       └── noisy_testset_wav/
-│           ├── p232_001.wav
-│           ├── p232_002.wav
-│           └── ...
-└── ...
+├-- data/
+│   ├-- train/
+│   │   ├-- clean_trainset_28spk_wav/
+│   │   │   ├-- p226_001.wav
+│   │   │   ├-- p226_002.wav
+│   │   │   └-- ...
+│   │   └-- noisy_trainset_28spk_wav/
+│   │       ├-- p226_001.wav
+│   │       ├-- p226_002.wav
+│   │       └-- ...
+│   └-- test/
+│       ├-- clean_testset_wav/
+│       │   ├-- p232_001.wav
+│       │   ├-- p232_002.wav
+│       │   └-- ...
+│       └-- noisy_testset_wav/
+│           ├-- p232_001.wav
+│           ├-- p232_002.wav
+│           └-- ...
+└-- ...
 ```
 
 ## Setup Instructions
