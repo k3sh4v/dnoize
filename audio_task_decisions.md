@@ -446,10 +446,12 @@ By `after_epoch`, all DML parameter gradients have been zeroed, so profiles woul
 
 Correct callback order:
 ```
-GradientClip order=5 (clips if norm > 3.0)
-GradientProfileCallback order=6 (captures post-clip, pre-step gradients)
-TrainingHealthCallback order=6 (captures post-clip gradient stats)
-GradientAccumulation order=7 (decides step vs accumulate)
+NaNGuard                order=4   (before GradientClip)
+GradientClip            order=5   (clips if norm > 3.0)
+GradientProfileCallback order=6   (captures post-clip gradients)
+TrainingHealthCallback  order=6   (captures post-clip gradient stats)
+GradientAccumulation    order=7   (decides step vs accumulate)
+DMLQueueFlush           order=99  (forces sync after epoch)
 ```
 Capture on FIRST batch (batch 0) and LAST batch (total-1) only to avoid 3x training slowdown
 from scanning all 100 parameters on every batch. First batch gives immediate zero-grad warning.
@@ -569,6 +571,18 @@ primarily carried in frequencies up to 8kHz (the Nyquist for 16kHz). Higher samp
 computational cost without improving the speech enhancement task on current architectures. For
 vocal music enhancement, a higher sample rate (22.05kHz minimum) would be needed to preserve
 the harmonic content above 8kHz.
+
+### 6.4 Validation Split – Fixed Seed Required
+
+The validation set split must use a **constant seed** (e.g., `seed=42`), NOT `EPOCH_SEED.value`.
+Using a varying seed changes the validation composition every epoch, introducing noise into
+metric comparisons. A fixed split ensures epoch‑to‑epoch comparability:
+- Validation metrics reflect genuine model improvement, not data‑split variation.
+- Curriculum augmentation (which *does* use EPOCH_SEED per file) remains independent.
+
+Implementation in `DataBlock`:
+```python
+splitter=RandomSplitter(valid_pct=valid_pct, seed=42)  # fixed, not EPOCH_SEED.value
 
 ---
 
